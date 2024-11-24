@@ -1,0 +1,3 @@
+threading
+deepface
+opencv-python
