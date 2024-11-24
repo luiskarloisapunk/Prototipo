@@ -44,7 +44,7 @@ while True:
         cv2.imshow('video', frame)
 
     key = cv2.waitKey(1)
-    if key == ord('q'):
+    if key == ord('q'):        #Cierran la ventana (webcam) con la "Q"
         break
 
 cv2.destroyAllWindows()
