@@ -1,3 +1,4 @@
-threading
+thread
 deepface
 opencv-python
+openpyxl
