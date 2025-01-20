@@ -1,33 +1,24 @@
-import threading
 import cv2
-import os
 import time
-from deepface import DeepFace
+from datetime import datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import NamedStyle, Font, Border, Side, Alignment
-from datetime import datetime
+import os
+import face_recognition
+import cv2
+import os
+import glob
+import numpy as np
 
-# Configuración de la cámara
+
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-reference_images = {}
-reference_folder = "./conocidos"  # Carpeta con imágenes de referencia, recuerden que cada archivo debe tener el nombre del 'conocido'
-
-for file in os.listdir(reference_folder):
-    if file.endswith(('.jpg', '.png', '.jpeg')):
-        name = os.path.splitext(file)[0]  # Extrae el nombre del archivo sin extensión
-        reference_images[name] = cv2.imread(os.path.join(reference_folder, file))
-
-
-detected_name = ""  
-counter = 0         # Contador de fotogramas
-last_detected_time = None
-
+ultimaDeteccion = None
+known_face_encodings = []
+known_face_names = []
+frame_resizing = 0.25
 
 
 def get_module_by_time(entry_time):
@@ -48,7 +39,6 @@ def get_module_by_time(entry_time):
         return 'Modulo 6'
     else:                                                    #12:30-13:20
         return 'Modulo 7'
-
 
 def add_to_excel(name, entry_time):
     entry_time = datetime.fromtimestamp(entry_time)
@@ -81,60 +71,88 @@ def add_to_excel(name, entry_time):
     wb.save(file_name)
 
 
+def load_encoding_images(images_path):
+
+    images_path = glob.glob(os.path.join(images_path, "*.*"))
+
+    print("Se han encontrado {} imagenes en la base de datos. Codificando...".format(len(images_path)))
+
+        # Store image encoding and names
+    for img_path in images_path:
+        img = cv2.imread(img_path)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # Get the filename only from the initial file path.
+        basename = os.path.basename(img_path)
+        (filename, ext) = os.path.splitext(basename)
+            # Get encoding
+        img_encoding = face_recognition.face_encodings(rgb_img)[0]
+
+            # Store file name and file encoding
+        known_face_encodings.append(img_encoding)
+        known_face_names.append(filename)
+    print("Imagenes cargadas.")
+
+def detect_known_faces(frame):
+    global ultimaDeteccion
+    small_frame = cv2.resize(frame, (0, 0), fx=frame_resizing, fy=frame_resizing)
+    rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+    
+    # Detectar ubicaciones y codificaciones de rostros en el fotograma
+    face_locations = face_recognition.face_locations(rgb_small_frame)
+    face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+
+    face_names = []
+    for face_encoding in face_encodings:
+        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+        name = ""
+
+        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+        best_match_index = np.argmin(face_distances)
+        if matches[best_match_index]:
+            name = known_face_names[best_match_index]
+            ultimaDeteccion = time.time()
+
+        face_names.append(name)
+
+    # Asegurarse de devolver siempre algo
+    if len(face_locations) == 0:
+        return [], []
+
+    face_locations = np.array(face_locations)
+    face_locations = (face_locations / frame_resizing).astype(int)
+    
+    return face_locations, face_names
 
 
 
-def check_face(frame, roi):
-    global detected_name, last_detected_time
-    try:
-        for name, ref_img in reference_images.items():
-            if DeepFace.verify(roi, ref_img.copy())['verified']:
-                detected_name = name    # Almacena el nombre del archivo
-                last_detected_time = time.time()  
-                return
-        detected_name = "" 
-        last_detected_time = time.time()
-    except ValueError:
-        detected_name = ""
-        last_detected_time = time.time()
-            
+load_encoding_images("conocidos/")
 
 
+
+
+#Bucle principal
 while True:
     ret, frame = cap.read()
 
-    if ret:
-        # Conversión a blanco y negro para mejor detección
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
-
-        # Dibujo de rectángulos sobre las caras detectadas
-        for (x, y, w, h) in faces:
-            color = (3, 192, 60) if detected_name != "" else (255,255,255)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-
-        # Verifica (toma una foto) cada 40 fotogramas
-        if len(faces) > 0 and counter % 40 == 0:
-            for (x, y, w, h) in faces:
-                roi = frame[y:y+h, x:x+w] 
-                threading.Thread(target=check_face, args=(frame.copy(), roi)).start()
-        counter += 1
-        current_time = time.time()
-        current_time2=datetime.now()
+    # Detect Faces
+    face_locations, face_names = detect_known_faces(frame)
+    for face_loc, name in zip(face_locations, face_names):
+        y1, x2, y2, x1 = face_loc[0], face_loc[1], face_loc[2], face_loc[3]
+    
+        actual = time.time()
         
-        if last_detected_time and current_time - last_detected_time <= 4 and detected_name !="":         
-         cv2.putText(frame, "Bienvenido, " + detected_name, (20, 450), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (3, 192, 60) if detected_name != "" else (195, 59, 35), 2)
-         add_to_excel(detected_name, current_time)
-        else:detected_name=""
+        if  name !="":
+            cv2.putText(frame, "Bienvenido, " + name, (20, 450), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (3, 192, 60) if name != "" else (195, 59, 35), 2)
+            add_to_excel(name, actual)
+        color = (3, 192, 60) if name != "" else (255,255,255)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-        cv2.imshow('video', frame)
+    cv2.imshow("CHECKPOINT", frame)
 
-    # Salir si se presiona 'q'
     key = cv2.waitKey(1)
-    if key == ord('q'):
+    if key == ord("q"):
         break
-
 
 cap.release()
 cv2.destroyAllWindows()
